@@ -135,6 +135,15 @@ impl Epub {
         Vec::new()
     }
 
+    /// Locate the cover image and return its manifest item together with its raw
+    /// bytes. Returns `None` if the book declares no cover, or declares one whose
+    /// resource is missing from the archive.
+    pub fn cover(&self) -> Option<(&ManifestItem, &[u8])> {
+        let item = self.package.cover_item()?;
+        let bytes = self.raw.get(&item.resolved_path)?;
+        Some((item, bytes))
+    }
+
     /// Apply metadata edits to the OPF and write a fresh, valid EPUB to `out_path`.
     ///
     /// The mimetype entry is rewritten first and stored; all other entries

@@ -111,6 +111,44 @@ fn toc_lists_chapter_titles() {
 }
 
 #[test]
+fn cover_extracts_image_to_file() {
+    let (dir, path) = fixture_on_disk();
+    let out_path = dir.path().join("extracted-cover.png");
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .args([
+            "cover",
+            path.to_str().unwrap(),
+            "-o",
+            out_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("image/png"));
+
+    let written = std::fs::read(&out_path).expect("cover file was written");
+    // A valid PNG signature proves we copied the real image bytes verbatim.
+    assert_eq!(&written[..8], b"\x89PNG\r\n\x1a\n");
+}
+
+#[test]
+fn cover_defaults_output_to_cover_filename() {
+    let (dir, path) = fixture_on_disk();
+
+    // With no -o, the cover is written to its own basename in the CWD.
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["cover", path.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cover.png"));
+
+    assert!(dir.path().join("cover.png").exists());
+}
+
+#[test]
 fn set_metadata_updates_title_and_author_and_keeps_mimetype_first_stored() {
     let (dir, path) = fixture_on_disk();
     let out_path = dir.path().join("edited.epub");

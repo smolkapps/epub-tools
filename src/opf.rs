@@ -59,6 +59,11 @@ pub fn parse_opf(xml: &str, opf_path: &str) -> Result<Package> {
                 let local = local_name(e.name().as_ref()).to_vec();
                 match local.as_slice() {
                     b"metadata" => in_metadata = true,
+                    b"meta" if in_metadata => {
+                        if let Some(id) = parse_cover_meta(&e) {
+                            pkg.cover_id.get_or_insert(id);
+                        }
+                    }
                     _ if in_metadata => {
                         let f = dc_field(&local);
                         if f != DcField::None {
@@ -80,6 +85,11 @@ pub fn parse_opf(xml: &str, opf_path: &str) -> Result<Package> {
                     b"itemref" => {
                         if let Some(sp) = parse_spine_item(&e) {
                             pkg.spine.push(sp);
+                        }
+                    }
+                    b"meta" if in_metadata => {
+                        if let Some(id) = parse_cover_meta(&e) {
+                            pkg.cover_id.get_or_insert(id);
                         }
                     }
                     // A self-closing DC element (e.g. <dc:identifier .../>) carries
@@ -189,6 +199,16 @@ fn parse_manifest_item(e: &quick_xml::events::BytesStart, opf_path: &str) -> Opt
         resolved_path,
         properties,
     })
+}
+
+/// Extract the referenced manifest id from an EPUB 2 cover meta element,
+/// i.e. `<meta name="cover" content="ID"/>`. Returns `None` for any other meta.
+fn parse_cover_meta(e: &quick_xml::events::BytesStart) -> Option<String> {
+    let name = attr_value(e, b"name")?;
+    if !name.eq_ignore_ascii_case("cover") {
+        return None;
+    }
+    attr_value(e, b"content").filter(|c| !c.is_empty())
 }
 
 fn parse_spine_item(e: &quick_xml::events::BytesStart) -> Option<SpineItem> {

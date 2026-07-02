@@ -31,6 +31,8 @@ enum Command {
     SetMetadata(SetMetadataArgs),
     /// List chapter titles from the nav (EPUB 3) or NCX (EPUB 2).
     Toc(FileArg),
+    /// Extract the cover image to a file.
+    Cover(CoverArgs),
     /// Write a generated sample EPUB to a path (handy for trying the tool).
     MakeSample(MakeSampleArgs),
 }
@@ -72,6 +74,15 @@ struct SetMetadataArgs {
 }
 
 #[derive(Args)]
+struct CoverArgs {
+    /// Path to the .epub file.
+    book: PathBuf,
+    /// Output path for the cover image (default: the cover's own filename).
+    #[arg(short = 'o', long = "output", value_name = "OUT")]
+    output: Option<PathBuf>,
+}
+
+#[derive(Args)]
 struct MakeSampleArgs {
     /// Output path for the generated sample .epub.
     #[arg(short = 'o', long = "output", default_value = "sample.epub")]
@@ -86,6 +97,7 @@ fn main() -> Result<()> {
         Command::Text(a) => cmd_text(&a.book, a.chapter),
         Command::SetMetadata(a) => cmd_set_metadata(a),
         Command::Toc(a) => cmd_toc(&a.book),
+        Command::Cover(a) => cmd_cover(&a.book, a.output),
         Command::MakeSample(a) => cmd_make_sample(&a.output),
     }
 }
@@ -187,6 +199,28 @@ fn cmd_toc(book: &std::path::Path) -> Result<()> {
             println!("{indent}{}  -> {}", entry.label, entry.href);
         }
     }
+    Ok(())
+}
+
+fn cmd_cover(book: &std::path::Path, output: Option<PathBuf>) -> Result<()> {
+    let epub = Epub::open(book)?;
+    let (item, bytes) = epub
+        .cover()
+        .context("this EPUB does not declare a cover image")?;
+
+    // Default to the cover resource's own filename (the basename of its href).
+    let out = output.unwrap_or_else(|| {
+        let base = item.href.rsplit('/').next().unwrap_or(&item.href);
+        PathBuf::from(base)
+    });
+
+    std::fs::write(&out, bytes).with_context(|| format!("writing {}", out.display()))?;
+    println!(
+        "Wrote cover ({}, {} bytes) to {}",
+        item.media_type,
+        bytes.len(),
+        out.display()
+    );
     Ok(())
 }
 

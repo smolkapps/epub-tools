@@ -1,7 +1,7 @@
 //! Library-level integration tests exercising the public `Epub` API directly
 //! (no subprocess), including the set-metadata round-trip and OCF packaging rule.
 
-use epub_tools::fixture::build_default_epub_bytes;
+use epub_tools::fixture::{build_default_epub_bytes, SAMPLE_COVER_PNG};
 use epub_tools::package::first_entry_info;
 use epub_tools::{Epub, MetadataEdit};
 
@@ -62,6 +62,57 @@ fn toc_from_nav() {
     assert_eq!(toc[0].label, "Chapter One");
     assert_eq!(toc[0].href, "chapter1.xhtml");
     assert_eq!(toc[1].label, "Chapter Two");
+}
+
+#[test]
+fn cover_returns_declared_image_bytes() {
+    let epub = Epub::from_bytes(build_default_epub_bytes().unwrap()).unwrap();
+    let (item, bytes) = epub.cover().expect("fixture declares a cover image");
+    assert_eq!(item.href, "cover.png");
+    assert_eq!(item.media_type, "image/png");
+    assert_eq!(item.resolved_path, "OEBPS/cover.png");
+    // The bytes are exactly the PNG we packed, header included.
+    assert_eq!(bytes, SAMPLE_COVER_PNG);
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+}
+
+#[test]
+fn cover_absent_when_not_declared() {
+    // A hand-built OPF with no cover-image property and no cover meta.
+    let opf = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>No Cover</dc:title>
+  </metadata>
+  <manifest>
+    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"#;
+    let pkg = epub_tools::opf::parse_opf(opf, "content.opf").unwrap();
+    assert!(pkg.cover_item().is_none());
+}
+
+#[test]
+fn cover_via_epub2_meta_fallback() {
+    // No properties="cover-image"; the cover is declared the EPUB 2 way, via
+    // <meta name="cover" content="ID"/> pointing at a manifest item.
+    let opf = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Old Cover</dc:title>
+    <meta name="cover" content="cover-img"/>
+  </metadata>
+  <manifest>
+    <item id="cover-img" href="images/cover.jpg" media-type="image/jpeg"/>
+    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"#;
+    let pkg = epub_tools::opf::parse_opf(opf, "OEBPS/content.opf").unwrap();
+    let cover = pkg.cover_item().expect("cover resolved via meta fallback");
+    assert_eq!(cover.id, "cover-img");
+    assert_eq!(cover.resolved_path, "OEBPS/images/cover.jpg");
 }
 
 #[test]

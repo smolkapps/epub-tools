@@ -24,7 +24,20 @@ pub struct FixtureSpec {
     pub date: String,
     /// (chapter title, body paragraphs) for each of the chapters.
     pub chapters: Vec<(String, Vec<String>)>,
+    /// Optional cover image as (filename, media-type, bytes). When present it is
+    /// added to the manifest with `properties="cover-image"` and referenced by an
+    /// EPUB 2 `<meta name="cover" .../>` for good measure.
+    pub cover: Option<(String, String, Vec<u8>)>,
 }
+
+/// A minimal but valid 1×1 transparent PNG, used as the sample cover image.
+pub const SAMPLE_COVER_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x62, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+    0x42, 0x60, 0x82,
+];
 
 impl Default for FixtureSpec {
     fn default() -> Self {
@@ -48,6 +61,11 @@ impl Default for FixtureSpec {
                     vec!["Call me Ishmael.".to_string()],
                 ),
             ],
+            cover: Some((
+                "cover.png".to_string(),
+                "image/png".to_string(),
+                SAMPLE_COVER_PNG.to_vec(),
+            )),
         }
     }
 }
@@ -116,6 +134,22 @@ pub fn build_epub_bytes(spec: &FixtureSpec) -> Result<Vec<u8>> {
     );
     entries.push(("OEBPS/nav.xhtml".to_string(), nav.into_bytes()));
 
+    // Optional cover image: raw bytes entry, manifest item, and EPUB 2 meta.
+    let (cover_manifest, cover_meta) = match &spec.cover {
+        Some((filename, media_type, bytes)) => {
+            entries.push((format!("OEBPS/{filename}"), bytes.clone()));
+            (
+                format!(
+                    "    <item id=\"cover-image\" href=\"{}\" media-type=\"{}\" properties=\"cover-image\"/>\n",
+                    xml_escape(filename),
+                    xml_escape(media_type),
+                ),
+                "    <meta name=\"cover\" content=\"cover-image\"/>\n".to_string(),
+            )
+        }
+        None => (String::new(), String::new()),
+    };
+
     // OPF package document.
     let creators: String = spec
         .authors
@@ -149,10 +183,10 @@ pub fn build_epub_bytes(spec: &FixtureSpec) -> Result<Vec<u8>> {
     <dc:identifier id="bookid">{identifier}</dc:identifier>
     <dc:publisher>{publisher}</dc:publisher>
     <dc:date>{date}</dc:date>
-  </metadata>
+{cover_meta}  </metadata>
   <manifest>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-{manifest_chapters}  </manifest>
+{cover_manifest}{manifest_chapters}  </manifest>
   <spine>
 {spine_chapters}  </spine>
 </package>
@@ -163,6 +197,8 @@ pub fn build_epub_bytes(spec: &FixtureSpec) -> Result<Vec<u8>> {
         identifier = xml_escape(&spec.identifier),
         publisher = xml_escape(&spec.publisher),
         date = xml_escape(&spec.date),
+        cover_meta = cover_meta,
+        cover_manifest = cover_manifest,
         manifest_chapters = manifest_chapters,
         spine_chapters = spine_chapters,
     );

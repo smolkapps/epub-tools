@@ -51,6 +51,15 @@ impl ManifestItem {
             .map(|p| p.split_whitespace().any(|t| t == "nav"))
             .unwrap_or(false)
     }
+
+    /// True if this manifest item is the EPUB 3 cover image
+    /// (`properties="cover-image"`).
+    pub fn is_cover_image(&self) -> bool {
+        self.properties
+            .as_deref()
+            .map(|p| p.split_whitespace().any(|t| t == "cover-image"))
+            .unwrap_or(false)
+    }
 }
 
 /// A single `<itemref>` from the OPF `<spine>`, in reading order.
@@ -70,6 +79,8 @@ pub struct Package {
     pub spine: Vec<SpineItem>,
     /// The `toc` attribute of the spine: an idref to the NCX manifest item (EPUB 2).
     pub spine_toc: Option<String>,
+    /// The EPUB 2 cover id from `<meta name="cover" content="ID"/>`, if present.
+    pub cover_id: Option<String>,
     /// Full archive path of the OPF document itself.
     pub opf_path: String,
 }
@@ -105,6 +116,21 @@ impl Package {
         self.manifest
             .iter()
             .find(|m| m.media_type == "application/x-dtbncx+xml")
+    }
+
+    /// The cover image manifest item, if the book declares one.
+    ///
+    /// Prefers the EPUB 3 convention (`properties="cover-image"`), then falls
+    /// back to the EPUB 2 convention (`<meta name="cover" content="ID"/>`
+    /// pointing at a manifest item).
+    pub fn cover_item(&self) -> Option<&ManifestItem> {
+        if let Some(item) = self.manifest.iter().find(|m| m.is_cover_image()) {
+            return Some(item);
+        }
+        if let Some(id) = &self.cover_id {
+            return self.manifest_item(id);
+        }
+        None
     }
 }
 
