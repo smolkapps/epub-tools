@@ -65,6 +65,17 @@ fn toc_from_nav() {
 }
 
 #[test]
+fn cover_image_is_found_and_extracted() {
+    let epub = Epub::from_bytes(build_default_epub_bytes().unwrap()).unwrap();
+    let (item, bytes) = epub.cover_image().expect("fixture declares a cover");
+    assert_eq!(item.resolved_path, "OEBPS/cover.png");
+    assert_eq!(item.media_type, "image/png");
+    // The bytes are a real PNG (magic number) and round-trip intact.
+    assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    assert_eq!(bytes.len(), 70);
+}
+
+#[test]
 fn set_metadata_roundtrip_updates_and_keeps_mimetype_first_stored() {
     let epub = Epub::from_bytes(build_default_epub_bytes().unwrap()).unwrap();
     let edit = MetadataEdit {

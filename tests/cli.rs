@@ -111,6 +111,57 @@ fn toc_lists_chapter_titles() {
 }
 
 #[test]
+fn cover_extracts_image_to_file() {
+    let (dir, path) = fixture_on_disk();
+    let out = dir.path().join("extracted.png");
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .args(["cover", path.to_str().unwrap(), "-o", out.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("image/png"));
+
+    let written = std::fs::read(&out).expect("cover was written");
+    assert_eq!(&written[..8], b"\x89PNG\r\n\x1a\n", "output is a PNG");
+}
+
+#[test]
+fn cover_errors_when_no_cover_declared() {
+    // Hand-build a minimal EPUB whose OPF declares no cover at all, then assert
+    // `cover` fails with the friendly "does not declare a cover image" message.
+    let container = br#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#;
+    let opf = br#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>No Cover</dc:title></metadata>
+  <manifest><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"#;
+    let entries = vec![
+        ("META-INF/container.xml".to_string(), container.to_vec()),
+        ("content.opf".to_string(), opf.to_vec()),
+        (
+            "c1.xhtml".to_string(),
+            b"<html><body><p>x</p></body></html>".to_vec(),
+        ),
+    ];
+    let bytes = epub_tools::package::write_epub_to_vec(&entries).unwrap();
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("nocover.epub");
+    std::fs::write(&path, bytes).unwrap();
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .args(["cover", path.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not declare a cover image"));
+}
+
+#[test]
 fn set_metadata_updates_title_and_author_and_keeps_mimetype_first_stored() {
     let (dir, path) = fixture_on_disk();
     let out_path = dir.path().join("edited.epub");

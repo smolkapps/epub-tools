@@ -127,6 +127,8 @@ pub fn parse_opf(xml: &str, opf_path: &str) -> Result<Package> {
     // The spine's `toc` attribute lives on the <spine> start tag; capture it in a
     // dedicated lightweight pass to avoid threading more state above.
     pkg.spine_toc = extract_spine_toc(xml);
+    // Likewise the EPUB 2 `<meta name="cover" content="…">` reference.
+    pkg.cover_id = extract_cover_meta(xml);
 
     Ok(pkg)
 }
@@ -214,5 +216,87 @@ fn extract_spine_toc(xml: &str) -> Option<String> {
             _ => {}
         }
         buf.clear();
+    }
+}
+
+/// Find the EPUB 2 `<meta name="cover" content="…">` reference, if present. The
+/// `content` value is a manifest item id pointing at the cover image resource.
+fn extract_cover_meta(xml: &str) -> Option<String> {
+    let mut reader = Reader::from_str(xml);
+    let mut buf = Vec::new();
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                if local_name(e.name().as_ref()) == b"meta"
+                    && attr_value(&e, b"name").as_deref() == Some("cover")
+                {
+                    if let Some(content) = attr_value(&e, b"content") {
+                        return Some(content);
+                    }
+                }
+            }
+            Ok(Event::Eof) | Err(_) => return None,
+            _ => {}
+        }
+        buf.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // An EPUB 2 style package: no `properties="cover-image"`, only a legacy
+    // `<meta name="cover" content="…">` pointing at the manifest item.
+    const EPUB2_OPF: &str = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="bookid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Legacy Book</dc:title>
+    <meta name="cover" content="cover-img"/>
+  </metadata>
+  <manifest>
+    <item id="cover-img" href="images/cover.jpg" media-type="image/jpeg"/>
+    <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine>
+    <itemref idref="ch1"/>
+  </spine>
+</package>
+"#;
+
+    #[test]
+    fn cover_item_falls_back_to_meta_name_cover() {
+        let pkg = parse_opf(EPUB2_OPF, "OEBPS/content.opf").unwrap();
+        assert_eq!(pkg.cover_id.as_deref(), Some("cover-img"));
+        let cover = pkg.cover_item().expect("cover resolved via meta");
+        assert_eq!(cover.id, "cover-img");
+        assert_eq!(cover.resolved_path, "OEBPS/images/cover.jpg");
+        assert_eq!(cover.media_type, "image/jpeg");
+    }
+
+    #[test]
+    fn cover_item_prefers_properties_over_meta() {
+        // properties="cover-image" wins even when a stale meta points elsewhere.
+        let opf = r#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata><meta name="cover" content="old"/></metadata>
+  <manifest>
+    <item id="old" href="old.png" media-type="image/png"/>
+    <item id="c" href="cover.png" media-type="image/png" properties="cover-image"/>
+  </manifest>
+  <spine/>
+</package>"#;
+        let pkg = parse_opf(opf, "content.opf").unwrap();
+        assert_eq!(pkg.cover_item().unwrap().id, "c");
+    }
+
+    #[test]
+    fn no_cover_declared_yields_none() {
+        let opf = r#"<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata><dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">X</dc:title></metadata>
+  <manifest><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="ch1"/></spine>
+</package>"#;
+        let pkg = parse_opf(opf, "content.opf").unwrap();
+        assert!(pkg.cover_item().is_none());
     }
 }

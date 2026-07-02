@@ -62,6 +62,9 @@ pub fn build_epub_bytes(spec: &FixtureSpec) -> Result<Vec<u8>> {
         CONTAINER_XML.as_bytes().to_vec(),
     ));
 
+    // A tiny (1x1) PNG cover image.
+    entries.push(("OEBPS/cover.png".to_string(), COVER_PNG.to_vec()));
+
     // Two chapter XHTML files.
     for (i, (ch_title, paras)) in spec.chapters.iter().enumerate() {
         let n = i + 1;
@@ -149,9 +152,11 @@ pub fn build_epub_bytes(spec: &FixtureSpec) -> Result<Vec<u8>> {
     <dc:identifier id="bookid">{identifier}</dc:identifier>
     <dc:publisher>{publisher}</dc:publisher>
     <dc:date>{date}</dc:date>
+    <meta name="cover" content="cover-img"/>
   </metadata>
   <manifest>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="cover-img" href="cover.png" media-type="image/png" properties="cover-image"/>
 {manifest_chapters}  </manifest>
   <spine>
 {spine_chapters}  </spine>
@@ -175,6 +180,13 @@ pub fn build_epub_bytes(spec: &FixtureSpec) -> Result<Vec<u8>> {
 pub fn build_default_epub_bytes() -> Result<Vec<u8>> {
     build_epub_bytes(&FixtureSpec::default())
 }
+
+/// A minimal, valid 1x1 red PNG used as the fixture's cover image.
+const COVER_PNG: [u8; 70] = [
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0,
+    0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 156, 99, 248, 207, 192, 240, 31, 0,
+    5, 0, 1, 255, 137, 153, 61, 29, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+];
 
 const CONTAINER_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">

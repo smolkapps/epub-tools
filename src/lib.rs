@@ -76,6 +76,20 @@ impl Epub {
         self.raw.get(path)
     }
 
+    /// The cover image's manifest item, if the book declares one (EPUB 3
+    /// `properties="cover-image"` or the EPUB 2 `<meta name="cover">` reference).
+    pub fn cover_item(&self) -> Option<&ManifestItem> {
+        self.package.cover_item()
+    }
+
+    /// The declared cover image paired with its raw bytes. Returns `None` when no
+    /// cover is declared or its resource is missing from the archive.
+    pub fn cover_image(&self) -> Option<(&ManifestItem, &[u8])> {
+        let item = self.package.cover_item()?;
+        let bytes = self.raw.get(&item.resolved_path)?;
+        Some((item, bytes))
+    }
+
     /// Extract plain text of every spine document, in reading order, joined by
     /// blank lines.
     pub fn full_text(&self) -> String {
