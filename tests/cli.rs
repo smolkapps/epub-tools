@@ -235,6 +235,104 @@ fn cover_reports_missing_resource_distinctly() {
 }
 
 #[test]
+fn cover_guide_pointing_at_xhtml_is_not_extracted() {
+    // A guide-only EPUB2 book whose cover reference points at an XHTML wrapper
+    // page must NOT have the HTML page written out and reported as a cover image.
+    // It should fail with a distinct "unresolvable cover declaration" message and
+    // never touch the xhtml bytes.
+    let container = r#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#;
+    let opf = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title></metadata>
+  <manifest>
+    <item id="cover-page" href="cover.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="cover-page"/></spine>
+  <guide>
+    <reference type="cover" title="Cover" href="cover.xhtml"/>
+  </guide>
+</package>"#;
+    let cover_html = b"<html><body>NOT-AN-IMAGE</body></html>";
+    let entries = vec![
+        (
+            "META-INF/container.xml".to_string(),
+            container.as_bytes().to_vec(),
+        ),
+        ("OEBPS/content.opf".to_string(), opf.as_bytes().to_vec()),
+        ("OEBPS/cover.xhtml".to_string(), cover_html.to_vec()),
+    ];
+    let bytes = write_epub_to_vec(&entries).unwrap();
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("guide-xhtml.epub");
+    std::fs::write(&path, bytes).unwrap();
+    let out = dir.path().join("cover.xhtml");
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .arg("cover")
+        .arg(&path)
+        .arg("-o")
+        .arg(&out)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unresolvable cover declaration"))
+        .stderr(predicate::str::contains("does not declare").not());
+
+    // The HTML wrapper bytes were never written to the output path.
+    assert!(!out.exists(), "no cover file should have been written");
+}
+
+#[test]
+fn cover_dangling_meta_declaration_is_unresolvable_not_undeclared() {
+    // A `<meta name="cover" content="no-such-id"/>` names a manifest id that does
+    // not exist. This is a broken/unresolvable declaration, NOT the absence of a
+    // cover, so the error must say so rather than "does not declare a cover".
+    let container = r#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#;
+    let opf = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>T</dc:title>
+    <meta name="cover" content="no-such-id"/>
+  </metadata>
+  <manifest>
+    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"#;
+    let entries = vec![
+        (
+            "META-INF/container.xml".to_string(),
+            container.as_bytes().to_vec(),
+        ),
+        ("OEBPS/content.opf".to_string(), opf.as_bytes().to_vec()),
+        (
+            "OEBPS/c1.xhtml".to_string(),
+            b"<html><body>hi</body></html>".to_vec(),
+        ),
+    ];
+    let bytes = write_epub_to_vec(&entries).unwrap();
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("dangling.epub");
+    std::fs::write(&path, bytes).unwrap();
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .arg("cover")
+        .arg(&path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unresolvable cover declaration"))
+        .stderr(predicate::str::contains("no-such-id"))
+        .stderr(predicate::str::contains("does not declare").not());
+}
+
+#[test]
 fn set_metadata_updates_title_and_author_and_keeps_mimetype_first_stored() {
     let (dir, path) = fixture_on_disk();
     let out_path = dir.path().join("edited.epub");

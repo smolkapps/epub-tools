@@ -208,12 +208,29 @@ fn cmd_cover(a: CoverArgs) -> Result<()> {
     let cover = match epub.cover() {
         Some(cover) => cover,
         None => {
-            // Distinguish "no cover declared at all" from "a cover IS declared but
-            // its resource is missing/unresolvable in the archive".
-            if let Some(item) = epub.package().cover_item() {
+            // Distinguish three cases:
+            //  1. a cover IS declared and resolves to an item, but its bytes are
+            //     missing from the archive;
+            //  2. a cover declaration exists but points at nothing resolvable (a
+            //     dangling id, or a guide reference to a non-image page);
+            //  3. no cover is declared at all.
+            let pkg = epub.package();
+            if let Some(item) = pkg.cover_item() {
                 anyhow::bail!(
                     "cover resource '{}' missing from archive",
                     item.resolved_path
+                );
+            }
+            if let Some(id) = &pkg.cover_id {
+                anyhow::bail!(
+                    "unresolvable cover declaration: <meta name=\"cover\" content=\"{id}\"> \
+                     does not resolve to a manifest image"
+                );
+            }
+            if let Some(path) = &pkg.cover_guide_path {
+                anyhow::bail!(
+                    "unresolvable cover declaration: guide cover reference '{path}' \
+                     does not resolve to a manifest image"
                 );
             }
             anyhow::bail!("this EPUB does not declare a cover image");

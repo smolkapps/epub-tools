@@ -380,6 +380,30 @@ mod tests {
     }
 
     #[test]
+    fn epub2_guide_reference_to_xhtml_is_not_a_cover_image() {
+        // The guide `type="cover"` points at an XHTML wrapper page, not an image.
+        // It must NOT be extracted as the cover image (that would write the HTML
+        // page and mislabel it), so `cover_item()` yields None even though the
+        // guide reference itself parsed fine.
+        let xml = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title></metadata>
+  <manifest>
+    <item id="cover-page" href="cover.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="cover-page"/></spine>
+  <guide>
+    <reference type="cover" title="Cover" href="cover.xhtml"/>
+  </guide>
+</package>"#;
+        let pkg = parse_opf(xml, OPF_PATH).unwrap();
+        // The guide reference resolved to the wrapper page...
+        assert_eq!(pkg.cover_guide_path.as_deref(), Some("OEBPS/cover.xhtml"));
+        // ...but it is not an image, so there is no cover image to extract.
+        assert!(pkg.cover_item().is_none());
+    }
+
+    #[test]
     fn no_cover_declared_yields_none() {
         let xml = r#"<?xml version="1.0"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0">

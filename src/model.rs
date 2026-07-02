@@ -154,7 +154,15 @@ impl Package {
             }
         }
         if let Some(path) = &self.cover_guide_path {
-            if let Some(item) = self.manifest.iter().find(|m| &m.resolved_path == path) {
+            // A guide `type="cover"` reference commonly points at an XHTML wrapper
+            // page rather than the image itself. Only accept it as the cover image
+            // when the referenced manifest item is actually an image; otherwise we
+            // would extract an HTML page and mislabel it as the cover.
+            if let Some(item) = self
+                .manifest
+                .iter()
+                .find(|m| &m.resolved_path == path && m.media_type.starts_with("image/"))
+            {
                 return Some(item);
             }
         }
