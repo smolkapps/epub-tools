@@ -5,7 +5,9 @@ use std::io::Cursor;
 use std::process::Command;
 
 use assert_cmd::prelude::*;
-use epub_tools::fixture::{build_default_epub_bytes, build_epub_bytes, FixtureSpec};
+use epub_tools::fixture::{
+    build_default_epub_bytes, build_epub_bytes, FixtureSpec, SAMPLE_COVER_PNG,
+};
 use epub_tools::package::EPUB_MIMETYPE;
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -108,6 +110,49 @@ fn toc_lists_chapter_titles() {
         .success()
         .stdout(predicate::str::contains("Chapter One"))
         .stdout(predicate::str::contains("Chapter Two"));
+}
+
+#[test]
+fn cover_writes_image_to_requested_path() {
+    let (dir, path) = fixture_on_disk();
+    let out_path = dir.path().join("extracted-cover.png");
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .args([
+            "cover",
+            path.to_str().unwrap(),
+            "-o",
+            out_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("image/png"));
+
+    let written = std::fs::read(&out_path).expect("cover file written");
+    // Exact bytes of the embedded fixture cover, and a valid PNG signature.
+    assert_eq!(written, SAMPLE_COVER_PNG);
+    assert_eq!(&written[..8], b"\x89PNG\r\n\x1a\n");
+}
+
+#[test]
+fn cover_errors_when_no_cover_declared() {
+    // Build a coverless book on disk and confirm the command fails cleanly.
+    let spec = FixtureSpec {
+        cover: None,
+        ..Default::default()
+    };
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("nocover.epub");
+    std::fs::write(&path, build_epub_bytes(&spec).unwrap()).unwrap();
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .arg("cover")
+        .arg(&path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not declare a cover"));
 }
 
 #[test]

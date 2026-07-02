@@ -2,8 +2,10 @@
 //!
 //! The generated book has: a stored `mimetype`, `META-INF/container.xml`,
 //! `OEBPS/content.opf` (title / two creators / language / identifier / publisher
-//! / date, a manifest of two chapters + a nav doc, and a spine listing the two
-//! chapters in order), an EPUB 3 `OEBPS/nav.xhtml`, and two XHTML chapters.
+//! / date, a manifest of two chapters + a nav doc + a cover image, and a spine
+//! listing the two chapters in order), an EPUB 3 `OEBPS/nav.xhtml`, a cover image
+//! declared both the EPUB 3 way (`properties="cover-image"`) and the EPUB 2 way
+//! (`<meta name="cover">`), and two XHTML chapters.
 //!
 //! This module is part of the library (not a test-only file) so that both the
 //! unit tests, the integration tests, and the binary's demo path can construct a
@@ -24,7 +26,29 @@ pub struct FixtureSpec {
     pub date: String,
     /// (chapter title, body paragraphs) for each of the chapters.
     pub chapters: Vec<(String, Vec<String>)>,
+    /// Cover image to embed, or `None` for a book with no cover.
+    pub cover: Option<CoverImage>,
 }
+
+/// A cover image to embed in the generated fixture.
+#[derive(Debug, Clone)]
+pub struct CoverImage {
+    /// Filename inside `OEBPS/`, e.g. `cover.png`.
+    pub filename: String,
+    /// Manifest media type, e.g. `image/png`.
+    pub media_type: String,
+    /// Raw image bytes.
+    pub bytes: Vec<u8>,
+}
+
+/// A tiny but valid 1×1 transparent PNG, used as the default fixture cover.
+pub const SAMPLE_COVER_PNG: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+    0x42, 0x60, 0x82,
+];
 
 impl Default for FixtureSpec {
     fn default() -> Self {
@@ -48,6 +72,11 @@ impl Default for FixtureSpec {
                     vec!["Call me Ishmael.".to_string()],
                 ),
             ],
+            cover: Some(CoverImage {
+                filename: "cover.png".to_string(),
+                media_type: "image/png".to_string(),
+                bytes: SAMPLE_COVER_PNG.to_vec(),
+            }),
         }
     }
 }
@@ -116,6 +145,26 @@ pub fn build_epub_bytes(spec: &FixtureSpec) -> Result<Vec<u8>> {
     );
     entries.push(("OEBPS/nav.xhtml".to_string(), nav.into_bytes()));
 
+    // Optional cover image: the binary resource plus the manifest item and the
+    // EPUB 2 <meta name="cover"> pointer.
+    let (cover_meta, cover_manifest) = match &spec.cover {
+        Some(cover) => {
+            entries.push((
+                format!("OEBPS/{}", cover.filename),
+                cover.bytes.clone(),
+            ));
+            (
+                "    <meta name=\"cover\" content=\"cover-image\"/>\n".to_string(),
+                format!(
+                    "    <item id=\"cover-image\" href=\"{}\" media-type=\"{}\" properties=\"cover-image\"/>\n",
+                    xml_escape(&cover.filename),
+                    xml_escape(&cover.media_type),
+                ),
+            )
+        }
+        None => (String::new(), String::new()),
+    };
+
     // OPF package document.
     let creators: String = spec
         .authors
@@ -149,10 +198,10 @@ pub fn build_epub_bytes(spec: &FixtureSpec) -> Result<Vec<u8>> {
     <dc:identifier id="bookid">{identifier}</dc:identifier>
     <dc:publisher>{publisher}</dc:publisher>
     <dc:date>{date}</dc:date>
-  </metadata>
+{cover_meta}  </metadata>
   <manifest>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
-{manifest_chapters}  </manifest>
+{cover_manifest}{manifest_chapters}  </manifest>
   <spine>
 {spine_chapters}  </spine>
 </package>
@@ -163,6 +212,8 @@ pub fn build_epub_bytes(spec: &FixtureSpec) -> Result<Vec<u8>> {
         identifier = xml_escape(&spec.identifier),
         publisher = xml_escape(&spec.publisher),
         date = xml_escape(&spec.date),
+        cover_meta = cover_meta,
+        cover_manifest = cover_manifest,
         manifest_chapters = manifest_chapters,
         spine_chapters = spine_chapters,
     );

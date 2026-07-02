@@ -40,6 +40,10 @@ epub-tools text BOOK.epub --chapter 2      # just the 2nd spine document
 # Table of contents (EPUB 3 nav, falling back to EPUB 2 NCX)
 epub-tools toc BOOK.epub
 
+# Extract the cover image (EPUB 3 cover-image property, or EPUB 2 <meta name="cover">)
+epub-tools cover BOOK.epub                 # writes cover.<ext> in the cwd
+epub-tools cover BOOK.epub -o front.jpg    # or choose the output path
+
 # Rewrite OPF metadata and repackage a valid EPUB (mimetype first & stored)
 epub-tools set-metadata BOOK.epub --title "New Title" --author "New Author" -o OUT.epub
 #   --language and --publisher are also supported
@@ -70,6 +74,9 @@ Date:       2026-06-21
   decodes entities, turns block elements into line breaks).
 - **`nav`** reads the table of contents from the EPUB 3 nav document or the
   EPUB 2 NCX.
+- **`cover`** locates the cover image — the EPUB 3 `properties="cover-image"`
+  manifest item, or the EPUB 2 `<meta name="cover">` pointer — and writes its
+  raw bytes out, choosing a file extension from the media type.
 - **`edit`** rewrites `dc:*` fields in place (replacing existing element text or
   inserting a new element before `</metadata>`), preserving the rest of the OPF.
 - **`package`** reads raw zip entries and writes a fresh EPUB with the

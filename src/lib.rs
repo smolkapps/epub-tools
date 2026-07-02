@@ -24,6 +24,42 @@ use anyhow::{anyhow, Context, Result};
 pub use edit::MetadataEdit;
 pub use model::{ManifestItem, Metadata, Package, SpineItem, TocEntry};
 
+/// A borrowed view of an EPUB's cover image: where it lives in the archive, its
+/// media type, and its raw bytes.
+pub struct Cover<'a> {
+    /// Full archive path of the cover resource.
+    pub resolved_path: &'a str,
+    /// The manifest media type, e.g. `image/jpeg`.
+    pub media_type: &'a str,
+    /// The raw image bytes.
+    pub bytes: &'a [u8],
+}
+
+impl Cover<'_> {
+    /// A sensible lowercase file extension (no dot) for saving the cover,
+    /// derived from the media type and falling back to the archive path's own
+    /// extension, or `"img"` if nothing better is known.
+    pub fn extension(&self) -> &str {
+        match self.media_type.trim().to_ascii_lowercase().as_str() {
+            "image/jpeg" | "image/jpg" => return "jpg",
+            "image/png" => return "png",
+            "image/gif" => return "gif",
+            "image/svg+xml" => return "svg",
+            "image/webp" => return "webp",
+            "image/tiff" => return "tiff",
+            "image/bmp" => return "bmp",
+            _ => {}
+        }
+        // Fall back to the extension of the resource's own filename.
+        self.resolved_path
+            .rsplit('/')
+            .next()
+            .and_then(|name| name.rsplit_once('.').map(|(_, ext)| ext))
+            .filter(|ext| !ext.is_empty() && ext.len() <= 5)
+            .unwrap_or("img")
+    }
+}
+
 /// A loaded EPUB: the raw zip entries plus the parsed package document.
 pub struct Epub {
     raw: package::RawEpub,
@@ -133,6 +169,19 @@ impl Epub {
             }
         }
         Vec::new()
+    }
+
+    /// The cover image, if the book declares one and the resource is present in
+    /// the archive. Prefers the EPUB 3 `properties="cover-image"` manifest item,
+    /// falling back to the EPUB 2 `<meta name="cover">` convention.
+    pub fn cover(&self) -> Option<Cover<'_>> {
+        let item = self.package.cover_item()?;
+        let bytes = self.raw.get(&item.resolved_path)?;
+        Some(Cover {
+            resolved_path: &item.resolved_path,
+            media_type: &item.media_type,
+            bytes,
+        })
     }
 
     /// Apply metadata edits to the OPF and write a fresh, valid EPUB to `out_path`.
