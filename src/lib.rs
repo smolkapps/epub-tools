@@ -39,24 +39,26 @@ impl Cover<'_> {
     /// A sensible lowercase file extension (no dot) for saving the cover,
     /// derived from the media type and falling back to the archive path's own
     /// extension, or `"img"` if nothing better is known.
-    pub fn extension(&self) -> &str {
+    pub fn extension(&self) -> String {
         match self.media_type.trim().to_ascii_lowercase().as_str() {
-            "image/jpeg" | "image/jpg" => return "jpg",
-            "image/png" => return "png",
-            "image/gif" => return "gif",
-            "image/svg+xml" => return "svg",
-            "image/webp" => return "webp",
-            "image/tiff" => return "tiff",
-            "image/bmp" => return "bmp",
+            "image/jpeg" | "image/jpg" => return "jpg".to_string(),
+            "image/png" => return "png".to_string(),
+            "image/gif" => return "gif".to_string(),
+            "image/svg+xml" => return "svg".to_string(),
+            "image/webp" => return "webp".to_string(),
+            "image/tiff" => return "tiff".to_string(),
+            "image/bmp" => return "bmp".to_string(),
             _ => {}
         }
-        // Fall back to the extension of the resource's own filename.
+        // Fall back to the extension of the resource's own filename, lowercased
+        // to match the documented behavior.
         self.resolved_path
             .rsplit('/')
             .next()
             .and_then(|name| name.rsplit_once('.').map(|(_, ext)| ext))
             .filter(|ext| !ext.is_empty() && ext.len() <= 5)
-            .unwrap_or("img")
+            .map(|ext| ext.to_ascii_lowercase())
+            .unwrap_or_else(|| "img".to_string())
     }
 }
 

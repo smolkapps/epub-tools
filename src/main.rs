@@ -205,13 +205,30 @@ fn cmd_toc(book: &std::path::Path) -> Result<()> {
 
 fn cmd_cover(a: CoverArgs) -> Result<()> {
     let epub = Epub::open(&a.book)?;
-    let cover = epub
-        .cover()
-        .ok_or_else(|| anyhow::anyhow!("this EPUB does not declare a cover image"))?;
+    let cover = match epub.cover() {
+        Some(cover) => cover,
+        None => {
+            // Distinguish "no cover declared at all" from "a cover IS declared but
+            // its resource is missing/unresolvable in the archive".
+            if let Some(item) = epub.package().cover_item() {
+                anyhow::bail!(
+                    "cover resource '{}' missing from archive",
+                    item.resolved_path
+                );
+            }
+            anyhow::bail!("this EPUB does not declare a cover image");
+        }
+    };
 
     let out = a
         .output
         .unwrap_or_else(|| PathBuf::from(format!("cover.{}", cover.extension())));
+    if out.exists() {
+        anyhow::bail!(
+            "refusing to overwrite existing file {}; pass -o/--output to choose another path",
+            out.display()
+        );
+    }
     std::fs::write(&out, cover.bytes)
         .with_context(|| format!("writing cover image {}", out.display()))?;
     println!(

@@ -107,6 +107,23 @@ fn cover_extension_falls_back_to_media_type() {
 }
 
 #[test]
+fn cover_extension_fallback_lowercases() {
+    // An unknown media type forces the filename-extension fallback, which the
+    // docs promise is lowercase — even when the filename shouts.
+    let spec = FixtureSpec {
+        cover: Some(epub_tools::fixture::CoverImage {
+            filename: "COVER.JPG".to_string(),
+            media_type: "application/octet-stream".to_string(),
+            bytes: vec![0x00, 0x01, 0x02],
+        }),
+        ..Default::default()
+    };
+    let epub = Epub::from_bytes(build_epub_bytes(&spec).unwrap()).unwrap();
+    let cover = epub.cover().unwrap();
+    assert_eq!(cover.extension(), "jpg");
+}
+
+#[test]
 fn set_metadata_roundtrip_updates_and_keeps_mimetype_first_stored() {
     let epub = Epub::from_bytes(build_default_epub_bytes().unwrap()).unwrap();
     let edit = MetadataEdit {
