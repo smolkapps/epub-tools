@@ -331,7 +331,9 @@ mod tests {
 </package>"#;
         let pkg = parse_opf(xml, OPF_PATH).unwrap();
         assert_eq!(pkg.cover_id.as_deref(), Some("cover-img"));
-        let cover = pkg.cover_item().expect("cover resolved via non-self-closing meta");
+        let cover = pkg
+            .cover_item()
+            .expect("cover resolved via non-self-closing meta");
         assert_eq!(cover.href, "images/front.jpg");
     }
 
@@ -351,7 +353,9 @@ mod tests {
         let pkg = parse_opf(xml, OPF_PATH).unwrap();
         // No manifest item has id "images/front.jpg"; the href fallback resolves it.
         assert!(pkg.manifest_item("images/front.jpg").is_none());
-        let cover = pkg.cover_item().expect("cover resolved via content href fallback");
+        let cover = pkg
+            .cover_item()
+            .expect("cover resolved via content href fallback");
         assert_eq!(cover.id, "cover-img");
     }
 
@@ -375,7 +379,9 @@ mod tests {
             pkg.cover_guide_path.as_deref(),
             Some("OEBPS/images/cover.jpeg")
         );
-        let cover = pkg.cover_item().expect("cover resolved via guide reference");
+        let cover = pkg
+            .cover_item()
+            .expect("cover resolved via guide reference");
         assert_eq!(cover.id, "cover-img");
     }
 

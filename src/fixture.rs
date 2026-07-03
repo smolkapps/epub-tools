@@ -149,10 +149,7 @@ pub fn build_epub_bytes(spec: &FixtureSpec) -> Result<Vec<u8>> {
     // EPUB 2 <meta name="cover"> pointer.
     let (cover_meta, cover_manifest) = match &spec.cover {
         Some(cover) => {
-            entries.push((
-                format!("OEBPS/{}", cover.filename),
-                cover.bytes.clone(),
-            ));
+            entries.push((format!("OEBPS/{}", cover.filename), cover.bytes.clone()));
             (
                 "    <meta name=\"cover\" content=\"cover-image\"/>\n".to_string(),
                 format!(

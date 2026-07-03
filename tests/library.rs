@@ -80,6 +80,32 @@ fn cover_extracts_declared_image() {
 }
 
 #[test]
+fn cover_resolves_when_entry_name_literally_contains_percent() {
+    // Regression: some archives store an entry whose NAME literally contains a
+    // percent sequence — here the file is really named `cover%20art.png` (the
+    // `%` is a genuine character in the zip entry name, NOT a URL-encoding of a
+    // space), and the manifest href is written the same literal way. Percent-
+    // decoding the href yields `cover art.png`, which is ABSENT from the archive.
+    // Resolution must therefore fall back to the raw, undecoded href and still
+    // find the real entry `OEBPS/cover%20art.png`.
+    let spec = FixtureSpec {
+        cover: Some(epub_tools::fixture::CoverImage {
+            filename: "cover%20art.png".to_string(),
+            media_type: "image/png".to_string(),
+            bytes: SAMPLE_COVER_PNG.to_vec(),
+        }),
+        ..Default::default()
+    };
+    let epub = Epub::from_bytes(build_epub_bytes(&spec).unwrap()).unwrap();
+    let cover = epub
+        .cover()
+        .expect("cover whose entry name literally contains '%20' must resolve via raw fallback");
+    assert_eq!(cover.resolved_path, "OEBPS/cover%20art.png");
+    assert_eq!(cover.media_type, "image/png");
+    assert_eq!(cover.bytes, SAMPLE_COVER_PNG);
+}
+
+#[test]
 fn cover_absent_returns_none() {
     let spec = FixtureSpec {
         cover: None,
