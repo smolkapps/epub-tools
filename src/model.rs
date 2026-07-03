@@ -1,5 +1,7 @@
 //! Core data structures describing the contents of an EPUB package document.
 
+use crate::util::resolve_href;
+
 /// Dublin Core metadata pulled from the OPF `<metadata>` element.
 ///
 /// All fields are optional except the vectors, which may be empty. EPUB allows
@@ -46,9 +48,20 @@ pub struct ManifestItem {
 impl ManifestItem {
     /// True if this manifest item is the EPUB 3 navigation document.
     pub fn is_nav(&self) -> bool {
+        self.has_property("nav")
+    }
+
+    /// True if this manifest item is the EPUB 3 cover image
+    /// (`properties="cover-image"`).
+    pub fn is_cover_image(&self) -> bool {
+        self.has_property("cover-image")
+    }
+
+    /// True if the space-separated `properties` attribute contains `token`.
+    fn has_property(&self, token: &str) -> bool {
         self.properties
             .as_deref()
-            .map(|p| p.split_whitespace().any(|t| t == "nav"))
+            .map(|p| p.split_whitespace().any(|t| t == token))
             .unwrap_or(false)
     }
 }
@@ -70,6 +83,11 @@ pub struct Package {
     pub spine: Vec<SpineItem>,
     /// The `toc` attribute of the spine: an idref to the NCX manifest item (EPUB 2).
     pub spine_toc: Option<String>,
+    /// The manifest id named by `<meta name="cover" content="ID"/>` (EPUB 2).
+    pub cover_id: Option<String>,
+    /// Full archive path of the cover resource named by a
+    /// `<guide><reference type="cover" href="..."/>` (EPUB 2).
+    pub cover_guide_path: Option<String>,
     /// Full archive path of the OPF document itself.
     pub opf_path: String,
 }
@@ -105,6 +123,50 @@ impl Package {
         self.manifest
             .iter()
             .find(|m| m.media_type == "application/x-dtbncx+xml")
+    }
+
+    /// The cover image manifest item, if the book declares one.
+    ///
+    /// Resolution order:
+    /// 1. EPUB 3 `properties="cover-image"` manifest item.
+    /// 2. EPUB 2 `<meta name="cover" content="ID"/>` naming a manifest item id,
+    ///    or — as a fallback — a filename/href in `content=` matching an item.
+    /// 3. EPUB 2 `<guide><reference type="cover" href="..."/>` pointing at a
+    ///    manifest resource.
+    pub fn cover_item(&self) -> Option<&ManifestItem> {
+        if let Some(item) = self.manifest.iter().find(|m| m.is_cover_image()) {
+            return Some(item);
+        }
+        if let Some(id) = &self.cover_id {
+            if let Some(item) = self.manifest_item(id) {
+                return Some(item);
+            }
+            // Some EPUB 2 books put a filename/href in `content=` rather than a
+            // manifest id; match it against an item's href or resolved path.
+            let resolved = resolve_href(&self.opf_path, id);
+            let tail = id.rsplit('/').next();
+            if let Some(item) = self.manifest.iter().find(|m| {
+                m.href == *id
+                    || m.resolved_path == resolved
+                    || (tail.is_some() && m.resolved_path.rsplit('/').next() == tail)
+            }) {
+                return Some(item);
+            }
+        }
+        if let Some(path) = &self.cover_guide_path {
+            // A guide `type="cover"` reference commonly points at an XHTML wrapper
+            // page rather than the image itself. Only accept it as the cover image
+            // when the referenced manifest item is actually an image; otherwise we
+            // would extract an HTML page and mislabel it as the cover.
+            if let Some(item) = self
+                .manifest
+                .iter()
+                .find(|m| &m.resolved_path == path && m.media_type.starts_with("image/"))
+            {
+                return Some(item);
+            }
+        }
+        None
     }
 }
 

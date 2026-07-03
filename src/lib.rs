@@ -24,6 +24,47 @@ use anyhow::{anyhow, Context, Result};
 pub use edit::MetadataEdit;
 pub use model::{ManifestItem, Metadata, Package, SpineItem, TocEntry};
 
+/// A borrowed view of an EPUB's cover image: where it lives in the archive, its
+/// media type, and its raw bytes.
+pub struct Cover<'a> {
+    /// Full archive path of the cover resource, as the bytes were actually found
+    /// in the zip. This is normally the percent-decoded manifest path, but for an
+    /// archive whose entry name literally contains a percent sequence it is the
+    /// raw entry name that actually matched (e.g. `OEBPS/cover%20art.png`).
+    pub resolved_path: String,
+    /// The manifest media type, e.g. `image/jpeg`.
+    pub media_type: &'a str,
+    /// The raw image bytes.
+    pub bytes: &'a [u8],
+}
+
+impl Cover<'_> {
+    /// A sensible lowercase file extension (no dot) for saving the cover,
+    /// derived from the media type and falling back to the archive path's own
+    /// extension, or `"img"` if nothing better is known.
+    pub fn extension(&self) -> String {
+        match self.media_type.trim().to_ascii_lowercase().as_str() {
+            "image/jpeg" | "image/jpg" => return "jpg".to_string(),
+            "image/png" => return "png".to_string(),
+            "image/gif" => return "gif".to_string(),
+            "image/svg+xml" => return "svg".to_string(),
+            "image/webp" => return "webp".to_string(),
+            "image/tiff" => return "tiff".to_string(),
+            "image/bmp" => return "bmp".to_string(),
+            _ => {}
+        }
+        // Fall back to the extension of the resource's own filename, lowercased
+        // to match the documented behavior.
+        self.resolved_path
+            .rsplit('/')
+            .next()
+            .and_then(|name| name.rsplit_once('.').map(|(_, ext)| ext))
+            .filter(|ext| !ext.is_empty() && ext.len() <= 5)
+            .map(|ext| ext.to_ascii_lowercase())
+            .unwrap_or_else(|| "img".to_string())
+    }
+}
+
 /// A loaded EPUB: the raw zip entries plus the parsed package document.
 pub struct Epub {
     raw: package::RawEpub,
@@ -34,8 +75,8 @@ impl Epub {
     /// Open and parse an EPUB from a filesystem path.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let bytes = std::fs::read(path)
-            .with_context(|| format!("reading EPUB file {}", path.display()))?;
+        let bytes =
+            std::fs::read(path).with_context(|| format!("reading EPUB file {}", path.display()))?;
         Self::from_bytes(bytes)
     }
 
@@ -76,6 +117,33 @@ impl Epub {
         self.raw.get(path)
     }
 
+    /// Fetch a manifest item's bytes from the archive, tolerating archives whose
+    /// entry names literally contain a percent sequence.
+    ///
+    /// The item's `resolved_path` is the PRIMARY lookup: it is percent-decoded,
+    /// which is what conforming EPUBs need (spaces are encoded as `%20` in hrefs
+    /// but stored literally in entry names). On a MISS, retry with the raw,
+    /// undecoded resolution of the original href — this recovers the rare archive
+    /// whose entry is genuinely named e.g. `cover%20art.png` (the `%` being a real
+    /// character, not an encoding). Because this backs every manifest lookup, the
+    /// fallback fixes cover, spine text, and TOC resolution alike.
+    ///
+    /// Returns the archive path the bytes were actually found at (the raw path
+    /// when the fallback fired) together with the bytes.
+    fn entry_bytes_for(&self, item: &ManifestItem) -> Option<(String, &[u8])> {
+        if let Some(bytes) = self.raw.get(&item.resolved_path) {
+            return Some((item.resolved_path.clone(), bytes));
+        }
+        let raw_path = util::resolve_href_raw(&self.package.opf_path, &item.href);
+        // Only worth a second lookup when the raw form actually differs.
+        if raw_path != item.resolved_path {
+            if let Some(bytes) = self.raw.get(&raw_path) {
+                return Some((raw_path, bytes));
+            }
+        }
+        None
+    }
+
     /// Extract plain text of every spine document, in reading order, joined by
     /// blank lines.
     pub fn full_text(&self) -> String {
@@ -105,11 +173,13 @@ impl Epub {
                 items.len()
             ));
         }
-        Ok(self.chapter_text_for(items[one_based - 1]).unwrap_or_default())
+        Ok(self
+            .chapter_text_for(items[one_based - 1])
+            .unwrap_or_default())
     }
 
     fn chapter_text_for(&self, item: &ManifestItem) -> Option<String> {
-        let bytes = self.raw.get(&item.resolved_path)?;
+        let (_, bytes) = self.entry_bytes_for(item)?;
         let xml = String::from_utf8_lossy(bytes);
         Some(text::xhtml_to_text(&xml))
     }
@@ -118,7 +188,7 @@ impl Epub {
     /// falling back to the EPUB 2 NCX. Returns an empty vector if neither exists.
     pub fn toc(&self) -> Vec<TocEntry> {
         if let Some(nav) = self.package.nav_item() {
-            if let Some(bytes) = self.raw.get(&nav.resolved_path) {
+            if let Some((_, bytes)) = self.entry_bytes_for(nav) {
                 let xml = String::from_utf8_lossy(bytes);
                 let entries = nav::parse_nav_xhtml(&xml);
                 if !entries.is_empty() {
@@ -127,12 +197,25 @@ impl Epub {
             }
         }
         if let Some(ncx) = self.package.ncx_item() {
-            if let Some(bytes) = self.raw.get(&ncx.resolved_path) {
+            if let Some((_, bytes)) = self.entry_bytes_for(ncx) {
                 let xml = String::from_utf8_lossy(bytes);
                 return nav::parse_ncx(&xml);
             }
         }
         Vec::new()
+    }
+
+    /// The cover image, if the book declares one and the resource is present in
+    /// the archive. Prefers the EPUB 3 `properties="cover-image"` manifest item,
+    /// falling back to the EPUB 2 `<meta name="cover">` convention.
+    pub fn cover(&self) -> Option<Cover<'_>> {
+        let item = self.package.cover_item()?;
+        let (resolved_path, bytes) = self.entry_bytes_for(item)?;
+        Some(Cover {
+            resolved_path,
+            media_type: &item.media_type,
+            bytes,
+        })
     }
 
     /// Apply metadata edits to the OPF and write a fresh, valid EPUB to `out_path`.

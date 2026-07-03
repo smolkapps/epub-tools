@@ -59,6 +59,22 @@ pub fn parse_opf(xml: &str, opf_path: &str) -> Result<Package> {
                 let local = local_name(e.name().as_ref()).to_vec();
                 match local.as_slice() {
                     b"metadata" => in_metadata = true,
+                    // A well-formed, non-self-closing `<meta name="cover" ...></meta>`
+                    // arrives as Start (not Empty); handle it here too so it is not
+                    // silently ignored. `dc_field(b"meta")` is None, so this never
+                    // interferes with Dublin Core text capture below.
+                    b"meta" if in_metadata && pkg.cover_id.is_none() => {
+                        if let Some(id) = parse_cover_meta(&e) {
+                            pkg.cover_id = Some(id);
+                        }
+                    }
+                    // A `<guide><reference type="cover" href="..."/>` may also be
+                    // written non-self-closing.
+                    b"reference" if pkg.cover_guide_path.is_none() => {
+                        if let Some(p) = parse_guide_cover(&e, opf_path) {
+                            pkg.cover_guide_path = Some(p);
+                        }
+                    }
                     _ if in_metadata => {
                         let f = dc_field(&local);
                         if f != DcField::None {
@@ -80,6 +96,16 @@ pub fn parse_opf(xml: &str, opf_path: &str) -> Result<Package> {
                     b"itemref" => {
                         if let Some(sp) = parse_spine_item(&e) {
                             pkg.spine.push(sp);
+                        }
+                    }
+                    b"meta" if in_metadata && pkg.cover_id.is_none() => {
+                        if let Some(id) = parse_cover_meta(&e) {
+                            pkg.cover_id = Some(id);
+                        }
+                    }
+                    b"reference" if pkg.cover_guide_path.is_none() => {
+                        if let Some(p) = parse_guide_cover(&e, opf_path) {
+                            pkg.cover_guide_path = Some(p);
                         }
                     }
                     // A self-closing DC element (e.g. <dc:identifier .../>) carries
@@ -191,6 +217,29 @@ fn parse_manifest_item(e: &quick_xml::events::BytesStart, opf_path: &str) -> Opt
     })
 }
 
+/// Read the manifest id from an EPUB 2 cover meta: `<meta name="cover" content="ID"/>`.
+fn parse_cover_meta(e: &quick_xml::events::BytesStart) -> Option<String> {
+    let name = attr_value(e, b"name")?;
+    if name.eq_ignore_ascii_case("cover") {
+        return attr_value(e, b"content").filter(|c| !c.is_empty());
+    }
+    None
+}
+
+/// Read the cover href from an EPUB 2 guide reference:
+/// `<reference type="cover" href="cover.xhtml"/>`. Returns the href resolved to a
+/// full archive path.
+fn parse_guide_cover(e: &quick_xml::events::BytesStart, opf_path: &str) -> Option<String> {
+    let typ = attr_value(e, b"type")?;
+    if typ.eq_ignore_ascii_case("cover") {
+        let href = attr_value(e, b"href")?;
+        if !href.is_empty() {
+            return Some(resolve_href(opf_path, &href));
+        }
+    }
+    None
+}
+
 fn parse_spine_item(e: &quick_xml::events::BytesStart) -> Option<SpineItem> {
     let idref = attr_value(e, b"idref")?;
     let linear = attr_value(e, b"linear")
@@ -214,5 +263,162 @@ fn extract_spine_toc(xml: &str) -> Option<String> {
             _ => {}
         }
         buf.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OPF_PATH: &str = "OEBPS/content.opf";
+
+    #[test]
+    fn epub2_meta_cover_resolves_to_manifest_item() {
+        // No `properties="cover-image"` anywhere — only the EPUB 2 meta pointer.
+        let xml = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Old Book</dc:title>
+    <meta name="cover" content="cover-img"/>
+  </metadata>
+  <manifest>
+    <item id="cover-img" href="images/front.jpg" media-type="image/jpeg"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx"><itemref idref="ncx"/></spine>
+</package>"#;
+        let pkg = parse_opf(xml, OPF_PATH).unwrap();
+        assert_eq!(pkg.cover_id.as_deref(), Some("cover-img"));
+        let cover = pkg.cover_item().expect("cover resolved via meta pointer");
+        assert_eq!(cover.href, "images/front.jpg");
+        assert_eq!(cover.resolved_path, "OEBPS/images/front.jpg");
+        assert_eq!(cover.media_type, "image/jpeg");
+    }
+
+    #[test]
+    fn epub3_cover_image_property_wins_over_meta() {
+        // Both conventions present but pointing at different items; the EPUB 3
+        // `properties="cover-image"` item takes precedence.
+        let xml = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <meta name="cover" content="old"/>
+  </metadata>
+  <manifest>
+    <item id="old" href="old.jpg" media-type="image/jpeg"/>
+    <item id="new" href="new.png" media-type="image/png" properties="cover-image"/>
+  </manifest>
+  <spine/>
+</package>"#;
+        let pkg = parse_opf(xml, OPF_PATH).unwrap();
+        let cover = pkg.cover_item().unwrap();
+        assert_eq!(cover.href, "new.png");
+    }
+
+    #[test]
+    fn epub2_non_self_closing_meta_cover_resolves() {
+        // A well-formed `<meta ...></meta>` (NOT self-closing) must still be read.
+        let xml = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Old Book</dc:title>
+    <meta name="cover" content="cover-img"></meta>
+  </metadata>
+  <manifest>
+    <item id="cover-img" href="images/front.jpg" media-type="image/jpeg"/>
+  </manifest>
+  <spine/>
+</package>"#;
+        let pkg = parse_opf(xml, OPF_PATH).unwrap();
+        assert_eq!(pkg.cover_id.as_deref(), Some("cover-img"));
+        let cover = pkg
+            .cover_item()
+            .expect("cover resolved via non-self-closing meta");
+        assert_eq!(cover.href, "images/front.jpg");
+    }
+
+    #[test]
+    fn epub2_meta_cover_content_is_filename() {
+        // Some books put a filename in `content=` instead of a manifest id.
+        let xml = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <meta name="cover" content="images/front.jpg"/>
+  </metadata>
+  <manifest>
+    <item id="cover-img" href="images/front.jpg" media-type="image/jpeg"/>
+  </manifest>
+  <spine/>
+</package>"#;
+        let pkg = parse_opf(xml, OPF_PATH).unwrap();
+        // No manifest item has id "images/front.jpg"; the href fallback resolves it.
+        assert!(pkg.manifest_item("images/front.jpg").is_none());
+        let cover = pkg
+            .cover_item()
+            .expect("cover resolved via content href fallback");
+        assert_eq!(cover.id, "cover-img");
+    }
+
+    #[test]
+    fn epub2_guide_reference_cover_fallback() {
+        // The only cover declaration is in the <guide>.
+        let xml = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title></metadata>
+  <manifest>
+    <item id="cover-img" href="images/cover.jpeg" media-type="image/jpeg"/>
+  </manifest>
+  <spine/>
+  <guide>
+    <reference type="cover" title="Cover" href="images/cover.jpeg"/>
+  </guide>
+</package>"#;
+        let pkg = parse_opf(xml, OPF_PATH).unwrap();
+        assert!(pkg.cover_id.is_none());
+        assert_eq!(
+            pkg.cover_guide_path.as_deref(),
+            Some("OEBPS/images/cover.jpeg")
+        );
+        let cover = pkg
+            .cover_item()
+            .expect("cover resolved via guide reference");
+        assert_eq!(cover.id, "cover-img");
+    }
+
+    #[test]
+    fn epub2_guide_reference_to_xhtml_is_not_a_cover_image() {
+        // The guide `type="cover"` points at an XHTML wrapper page, not an image.
+        // It must NOT be extracted as the cover image (that would write the HTML
+        // page and mislabel it), so `cover_item()` yields None even though the
+        // guide reference itself parsed fine.
+        let xml = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title></metadata>
+  <manifest>
+    <item id="cover-page" href="cover.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="cover-page"/></spine>
+  <guide>
+    <reference type="cover" title="Cover" href="cover.xhtml"/>
+  </guide>
+</package>"#;
+        let pkg = parse_opf(xml, OPF_PATH).unwrap();
+        // The guide reference resolved to the wrapper page...
+        assert_eq!(pkg.cover_guide_path.as_deref(), Some("OEBPS/cover.xhtml"));
+        // ...but it is not an image, so there is no cover image to extract.
+        assert!(pkg.cover_item().is_none());
+    }
+
+    #[test]
+    fn no_cover_declared_yields_none() {
+        let xml = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title></metadata>
+  <manifest><item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/></manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"#;
+        let pkg = parse_opf(xml, OPF_PATH).unwrap();
+        assert!(pkg.cover_id.is_none());
+        assert!(pkg.cover_item().is_none());
     }
 }

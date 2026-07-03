@@ -1,7 +1,9 @@
 //! Library-level integration tests exercising the public `Epub` API directly
 //! (no subprocess), including the set-metadata round-trip and OCF packaging rule.
 
-use epub_tools::fixture::build_default_epub_bytes;
+use epub_tools::fixture::{
+    build_default_epub_bytes, build_epub_bytes, FixtureSpec, SAMPLE_COVER_PNG,
+};
 use epub_tools::package::first_entry_info;
 use epub_tools::{Epub, MetadataEdit};
 
@@ -62,6 +64,89 @@ fn toc_from_nav() {
     assert_eq!(toc[0].label, "Chapter One");
     assert_eq!(toc[0].href, "chapter1.xhtml");
     assert_eq!(toc[1].label, "Chapter Two");
+}
+
+#[test]
+fn cover_extracts_declared_image() {
+    let epub = Epub::from_bytes(build_default_epub_bytes().unwrap()).unwrap();
+    let cover = epub.cover().expect("fixture declares a cover");
+    assert_eq!(cover.media_type, "image/png");
+    assert_eq!(cover.resolved_path, "OEBPS/cover.png");
+    assert_eq!(cover.extension(), "png");
+    // The extracted bytes are exactly the embedded image.
+    assert_eq!(cover.bytes, SAMPLE_COVER_PNG);
+    // ...and they are a real PNG (starts with the PNG signature).
+    assert_eq!(&cover.bytes[..8], b"\x89PNG\r\n\x1a\n");
+}
+
+#[test]
+fn cover_resolves_when_entry_name_literally_contains_percent() {
+    // Regression: some archives store an entry whose NAME literally contains a
+    // percent sequence — here the file is really named `cover%20art.png` (the
+    // `%` is a genuine character in the zip entry name, NOT a URL-encoding of a
+    // space), and the manifest href is written the same literal way. Percent-
+    // decoding the href yields `cover art.png`, which is ABSENT from the archive.
+    // Resolution must therefore fall back to the raw, undecoded href and still
+    // find the real entry `OEBPS/cover%20art.png`.
+    let spec = FixtureSpec {
+        cover: Some(epub_tools::fixture::CoverImage {
+            filename: "cover%20art.png".to_string(),
+            media_type: "image/png".to_string(),
+            bytes: SAMPLE_COVER_PNG.to_vec(),
+        }),
+        ..Default::default()
+    };
+    let epub = Epub::from_bytes(build_epub_bytes(&spec).unwrap()).unwrap();
+    let cover = epub
+        .cover()
+        .expect("cover whose entry name literally contains '%20' must resolve via raw fallback");
+    assert_eq!(cover.resolved_path, "OEBPS/cover%20art.png");
+    assert_eq!(cover.media_type, "image/png");
+    assert_eq!(cover.bytes, SAMPLE_COVER_PNG);
+}
+
+#[test]
+fn cover_absent_returns_none() {
+    let spec = FixtureSpec {
+        cover: None,
+        ..Default::default()
+    };
+    let epub = Epub::from_bytes(build_epub_bytes(&spec).unwrap()).unwrap();
+    assert!(epub.cover().is_none());
+}
+
+#[test]
+fn cover_extension_falls_back_to_media_type() {
+    // A cover advertised as JPEG but stored as `cover.bin` still saves as `.jpg`.
+    let spec = FixtureSpec {
+        cover: Some(epub_tools::fixture::CoverImage {
+            filename: "cover.bin".to_string(),
+            media_type: "image/jpeg".to_string(),
+            bytes: vec![0xFF, 0xD8, 0xFF, 0xE0],
+        }),
+        ..Default::default()
+    };
+    let epub = Epub::from_bytes(build_epub_bytes(&spec).unwrap()).unwrap();
+    let cover = epub.cover().unwrap();
+    assert_eq!(cover.extension(), "jpg");
+    assert_eq!(cover.resolved_path, "OEBPS/cover.bin");
+}
+
+#[test]
+fn cover_extension_fallback_lowercases() {
+    // An unknown media type forces the filename-extension fallback, which the
+    // docs promise is lowercase — even when the filename shouts.
+    let spec = FixtureSpec {
+        cover: Some(epub_tools::fixture::CoverImage {
+            filename: "COVER.JPG".to_string(),
+            media_type: "application/octet-stream".to_string(),
+            bytes: vec![0x00, 0x01, 0x02],
+        }),
+        ..Default::default()
+    };
+    let epub = Epub::from_bytes(build_epub_bytes(&spec).unwrap()).unwrap();
+    let cover = epub.cover().unwrap();
+    assert_eq!(cover.extension(), "jpg");
 }
 
 #[test]

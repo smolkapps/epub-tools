@@ -5,8 +5,10 @@ use std::io::Cursor;
 use std::process::Command;
 
 use assert_cmd::prelude::*;
-use epub_tools::fixture::{build_default_epub_bytes, build_epub_bytes, FixtureSpec};
-use epub_tools::package::EPUB_MIMETYPE;
+use epub_tools::fixture::{
+    build_default_epub_bytes, build_epub_bytes, FixtureSpec, SAMPLE_COVER_PNG,
+};
+use epub_tools::package::{write_epub_to_vec, EPUB_MIMETYPE};
 use predicates::prelude::*;
 use tempfile::TempDir;
 use zip::{CompressionMethod, ZipArchive};
@@ -108,6 +110,226 @@ fn toc_lists_chapter_titles() {
         .success()
         .stdout(predicate::str::contains("Chapter One"))
         .stdout(predicate::str::contains("Chapter Two"));
+}
+
+#[test]
+fn cover_writes_image_to_requested_path() {
+    let (dir, path) = fixture_on_disk();
+    let out_path = dir.path().join("extracted-cover.png");
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .args([
+            "cover",
+            path.to_str().unwrap(),
+            "-o",
+            out_path.to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("image/png"));
+
+    let written = std::fs::read(&out_path).expect("cover file written");
+    // Exact bytes of the embedded fixture cover, and a valid PNG signature.
+    assert_eq!(written, SAMPLE_COVER_PNG);
+    assert_eq!(&written[..8], b"\x89PNG\r\n\x1a\n");
+}
+
+#[test]
+fn cover_errors_when_no_cover_declared() {
+    // Build a coverless book on disk and confirm the command fails cleanly.
+    let spec = FixtureSpec {
+        cover: None,
+        ..Default::default()
+    };
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("nocover.epub");
+    std::fs::write(&path, build_epub_bytes(&spec).unwrap()).unwrap();
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .arg("cover")
+        .arg(&path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not declare a cover"));
+}
+
+#[test]
+fn cover_default_output_names_by_extension() {
+    // With no -o, the cover is written to `cover.<ext>` in the current directory.
+    let (dir, path) = fixture_on_disk();
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .arg("cover")
+        .arg(&path)
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cover.png"));
+
+    let written = std::fs::read(dir.path().join("cover.png")).expect("default cover.png written");
+    assert_eq!(written, SAMPLE_COVER_PNG);
+}
+
+#[test]
+fn cover_refuses_to_overwrite_existing_output() {
+    let (dir, path) = fixture_on_disk();
+    let out_path = dir.path().join("exists.png");
+    std::fs::write(&out_path, b"do-not-clobber").unwrap();
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .args([
+            "cover",
+            path.to_str().unwrap(),
+            "-o",
+            out_path.to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("refusing to overwrite"));
+
+    // The pre-existing file is left untouched.
+    assert_eq!(std::fs::read(&out_path).unwrap(), b"do-not-clobber");
+}
+
+#[test]
+fn cover_reports_missing_resource_distinctly() {
+    // A book that DECLARES a cover whose resource is absent must not be reported
+    // as "does not declare a cover"; it names the missing archive path instead.
+    let container = r#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#;
+    let opf = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title></metadata>
+  <manifest>
+    <item id="cover" href="missing.png" media-type="image/png" properties="cover-image"/>
+  </manifest>
+  <spine/>
+</package>"#;
+    let entries = vec![
+        (
+            "META-INF/container.xml".to_string(),
+            container.as_bytes().to_vec(),
+        ),
+        ("OEBPS/content.opf".to_string(), opf.as_bytes().to_vec()),
+    ];
+    let bytes = write_epub_to_vec(&entries).unwrap();
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("broken.epub");
+    std::fs::write(&path, bytes).unwrap();
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .arg("cover")
+        .arg(&path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("missing from archive"))
+        .stderr(predicate::str::contains("OEBPS/missing.png"))
+        .stderr(predicate::str::contains("does not declare").not());
+}
+
+#[test]
+fn cover_guide_pointing_at_xhtml_is_not_extracted() {
+    // A guide-only EPUB2 book whose cover reference points at an XHTML wrapper
+    // page must NOT have the HTML page written out and reported as a cover image.
+    // It should fail with a distinct "unresolvable cover declaration" message and
+    // never touch the xhtml bytes.
+    let container = r#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#;
+    let opf = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>T</dc:title></metadata>
+  <manifest>
+    <item id="cover-page" href="cover.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="cover-page"/></spine>
+  <guide>
+    <reference type="cover" title="Cover" href="cover.xhtml"/>
+  </guide>
+</package>"#;
+    let cover_html = b"<html><body>NOT-AN-IMAGE</body></html>";
+    let entries = vec![
+        (
+            "META-INF/container.xml".to_string(),
+            container.as_bytes().to_vec(),
+        ),
+        ("OEBPS/content.opf".to_string(), opf.as_bytes().to_vec()),
+        ("OEBPS/cover.xhtml".to_string(), cover_html.to_vec()),
+    ];
+    let bytes = write_epub_to_vec(&entries).unwrap();
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("guide-xhtml.epub");
+    std::fs::write(&path, bytes).unwrap();
+    let out = dir.path().join("cover.xhtml");
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .arg("cover")
+        .arg(&path)
+        .arg("-o")
+        .arg(&out)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unresolvable cover declaration"))
+        .stderr(predicate::str::contains("does not declare").not());
+
+    // The HTML wrapper bytes were never written to the output path.
+    assert!(!out.exists(), "no cover file should have been written");
+}
+
+#[test]
+fn cover_dangling_meta_declaration_is_unresolvable_not_undeclared() {
+    // A `<meta name="cover" content="no-such-id"/>` names a manifest id that does
+    // not exist. This is a broken/unresolvable declaration, NOT the absence of a
+    // cover, so the error must say so rather than "does not declare a cover".
+    let container = r#"<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>"#;
+    let opf = r#"<?xml version="1.0"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>T</dc:title>
+    <meta name="cover" content="no-such-id"/>
+  </metadata>
+  <manifest>
+    <item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>
+  </manifest>
+  <spine><itemref idref="c1"/></spine>
+</package>"#;
+    let entries = vec![
+        (
+            "META-INF/container.xml".to_string(),
+            container.as_bytes().to_vec(),
+        ),
+        ("OEBPS/content.opf".to_string(), opf.as_bytes().to_vec()),
+        (
+            "OEBPS/c1.xhtml".to_string(),
+            b"<html><body>hi</body></html>".to_vec(),
+        ),
+    ];
+    let bytes = write_epub_to_vec(&entries).unwrap();
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("dangling.epub");
+    std::fs::write(&path, bytes).unwrap();
+
+    Command::cargo_bin("epub-tools")
+        .unwrap()
+        .arg("cover")
+        .arg(&path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unresolvable cover declaration"))
+        .stderr(predicate::str::contains("no-such-id"))
+        .stderr(predicate::str::contains("does not declare").not());
 }
 
 #[test]

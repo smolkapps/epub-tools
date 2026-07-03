@@ -14,13 +14,49 @@
 /// assert_eq!(resolve_href("OEBPS/content.opf", "chap1.xhtml"), "OEBPS/chap1.xhtml");
 /// assert_eq!(resolve_href("OEBPS/content.opf", "../images/x.png"), "images/x.png");
 /// assert_eq!(resolve_href("content.opf", "text/c.xhtml"), "text/c.xhtml");
+/// assert_eq!(resolve_href("OEBPS/content.opf", "cover%20art.jpg"), "OEBPS/cover art.jpg");
 /// ```
 pub fn resolve_href(base_file: &str, href: &str) -> String {
+    // Percent-decode so a URL-escaped href like `cover%20art.jpg` maps onto the
+    // literal zip entry name `cover art.jpg`. This is the PRIMARY resolution:
+    // conforming EPUBs percent-encode reserved characters (notably spaces) in
+    // hrefs, so the decoded form is what usually matches the archive entry.
+    resolve_href_impl(base_file, href, true)
+}
+
+/// Like [`resolve_href`] but WITHOUT percent-decoding: the href is treated as a
+/// literal path. Used as a fallback for the rare archive whose zip entry names
+/// literally contain a percent sequence (e.g. a stored entry genuinely named
+/// `cover%20art.png`, where `%` is a real character rather than an encoding of a
+/// space). Path segment logic (`.`/`..`, fragment/query stripping, leading `/`)
+/// is identical to the decoding form.
+///
+/// # Examples
+/// ```
+/// use epub_tools::util::resolve_href_raw;
+/// // No decoding: the literal %20 is preserved in the resolved entry name.
+/// assert_eq!(
+///     resolve_href_raw("OEBPS/content.opf", "cover%20art.png"),
+///     "OEBPS/cover%20art.png"
+/// );
+/// ```
+pub fn resolve_href_raw(base_file: &str, href: &str) -> String {
+    resolve_href_impl(base_file, href, false)
+}
+
+/// Shared resolution: strip fragment/query, optionally percent-decode, then
+/// normalize `.`/`..` segments against the base file's directory.
+fn resolve_href_impl(base_file: &str, href: &str, decode: bool) -> String {
     // Drop fragment and query from the href.
     let href = href.split(['#', '?']).next().unwrap_or(href);
 
-    // Percent-decode is intentionally NOT done: zip entry names in practice
-    // match the raw href for the EPUBs we target, and decoding risks mismatches.
+    let decoded;
+    let href = if decode {
+        decoded = percent_decode(href);
+        decoded.as_str()
+    } else {
+        href
+    };
 
     let mut stack: Vec<&str> = Vec::new();
 
@@ -46,6 +82,35 @@ pub fn resolve_href(base_file: &str, href: &str) -> String {
     }
 
     stack.join("/")
+}
+
+/// Decode `%XX` percent-escapes in a URL path. Invalid or truncated escapes are
+/// left as-is. Decoded bytes are interpreted as UTF-8 (lossily).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                out.push(hi * 16 + lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn push_segment<'a>(stack: &mut Vec<&'a str>, seg: &'a str) {
@@ -104,6 +169,34 @@ mod tests {
         assert_eq!(
             resolve_href("OEBPS/content.opf", "./sub/./a.xhtml"),
             "OEBPS/sub/a.xhtml"
+        );
+    }
+
+    #[test]
+    fn decodes_percent_encoding() {
+        assert_eq!(
+            resolve_href("OEBPS/content.opf", "cover%20art.jpg"),
+            "OEBPS/cover art.jpg"
+        );
+        // A stray, malformed percent escape is left untouched.
+        assert_eq!(
+            resolve_href("OEBPS/content.opf", "50%off.png"),
+            "OEBPS/50%off.png"
+        );
+    }
+
+    #[test]
+    fn raw_resolution_does_not_decode() {
+        // The raw form leaves percent sequences intact so it can match an entry
+        // whose name literally contains `%20`.
+        assert_eq!(
+            resolve_href_raw("OEBPS/content.opf", "cover%20art.png"),
+            "OEBPS/cover%20art.png"
+        );
+        // Fragment/query stripping and `..` normalization still apply.
+        assert_eq!(
+            resolve_href_raw("OEBPS/text/x.opf", "../img/c%20a.png#f"),
+            "OEBPS/img/c%20a.png"
         );
     }
 
